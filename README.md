@@ -5,7 +5,7 @@ with local analysis scripts, converted data, and outputs used during
 validation.
 
 Upstream source:
-- https://github.com/darkbreaker0/EphysExtraction (see `NOTICE.md`)
+- https://github.com/berenslab/EphysExtraction (see `NOTICE.md`)
 
 Overview (from upstream README)
 - Extract electrophysiological parameters from voltage traces.
