@@ -6,7 +6,7 @@ import os
 import numpy as np
 from pynwb import NWBHDF5IO
 
-import ephys_extractor as efex
+from EphysExtraction import ephys_extractor as efex
 
 
 def parse_description(series):
