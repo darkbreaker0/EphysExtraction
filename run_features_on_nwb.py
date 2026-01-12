@@ -177,9 +177,128 @@ def most_common_amp(amps):
     return float(np.min(candidates))
 
 
+def estimate_current_noise(i_pA):
+    # Use trace edges as baseline to estimate command noise.
+    if i_pA is None or len(i_pA) < 10:
+        return np.nan
+    n = len(i_pA)
+    edge = max(1, int(0.1 * n))
+    baseline = np.concatenate([i_pA[:edge], i_pA[-edge:]])
+    return float(np.nanstd(baseline))
+
+
+def estimate_dvdt_cutoff(v_mV, t):
+    # Estimate a dv/dt cutoff from high-percentile positive slopes.
+    if v_mV is None or len(v_mV) < 10:
+        return np.nan
+    dvdt = np.diff(v_mV) / np.diff(t)
+    dvdt = dvdt[np.isfinite(dvdt)]
+    dvdt = dvdt[dvdt > 0]
+    if dvdt.size == 0:
+        return np.nan
+    p995 = float(np.percentile(dvdt, 99.5))
+    return max(5.0, min(40.0, 0.5 * p995))
+
+
+def auto_parameters(nwbfile, acq_by_sweep, stim_by_sweep, adc_name, dac_name,
+                    defaults):
+    # Derive per-file heuristics from a few representative sweeps.
+    rates = []
+    noise_vals = []
+    starts = []
+    ends = []
+    durations = []
+    dvdt_cutoffs = []
+
+    for sweep in sorted(acq_by_sweep.keys()):
+        acq_series = pick_series(acq_by_sweep.get(sweep, []), adc_name, "adc_name")
+        if acq_series is None:
+            continue
+        rates.append(float(acq_series.rate))
+
+        stim_series = pick_series(stim_by_sweep.get(sweep, []), dac_name, "dac_name")
+        i = None
+        if stim_series is not None:
+            i_si, i_unit = series_to_trace(stim_series)
+            i = to_picoamps(i_si, i_unit)
+
+        if i is not None:
+            noise_vals.append(estimate_current_noise(i))
+
+        v_si, v_unit = series_to_trace(acq_series)
+        v = to_millivolts(v_si, v_unit)
+        t = build_time_vector(acq_series, len(v))
+
+        dvdt_cutoff = estimate_dvdt_cutoff(v, t)
+        if np.isfinite(dvdt_cutoff):
+            dvdt_cutoffs.append(dvdt_cutoff)
+
+        if i is not None:
+            stim_eps = max(1.0, 4.0 * np.nanmedian(noise_vals)) if noise_vals else defaults["stim_eps"]
+            start, end = find_stim_window(t, i, stim_eps)
+            if np.isfinite(start) and np.isfinite(end) and end > start:
+                starts.append(start)
+                ends.append(end)
+                durations.append(end - start)
+
+        if len(rates) >= 3:
+            break
+
+    rate = float(np.nanmedian(rates)) if rates else np.nan
+    nyquist_khz = (rate / 2.0) / 1000.0 if np.isfinite(rate) else np.nan
+    filter_khz = defaults["filter_khz"]
+    if np.isfinite(nyquist_khz):
+        filter_khz = min(4.0, 0.45 * nyquist_khz)
+        filter_khz = max(1.0, filter_khz)
+
+    stim_eps = defaults["stim_eps"]
+    if noise_vals and np.isfinite(np.nanmedian(noise_vals)):
+        stim_eps = max(1.0, 4.0 * float(np.nanmedian(noise_vals)))
+
+    step_tol = defaults["step_tol"]
+    if noise_vals and np.isfinite(np.nanmedian(noise_vals)):
+        step_tol = max(1.0, 3.0 * float(np.nanmedian(noise_vals)))
+
+    min_stim_dur = defaults["min_stim_dur"]
+    short_thresh = defaults["short_thresh"]
+    baseline_window = defaults["baseline_window"]
+    fixed_start = defaults["fixed_start"]
+    fixed_end = defaults["fixed_end"]
+    if durations:
+        med_dur = float(np.nanmedian(durations))
+        min_stim_dur = max(0.01, 0.2 * med_dur)
+        baseline_window = min(0.1, 0.25 * med_dur)
+        baseline_window = max(0.02, baseline_window)
+        if med_dur >= 0.2:
+            short_thresh = 0.1
+        else:
+            short_thresh = max(0.02, 0.25 * med_dur)
+
+        dt = 1.0 / rate if np.isfinite(rate) and rate > 0 else np.nan
+        if np.isfinite(dt) and np.std(starts) <= 2 * dt and np.std(ends) <= 2 * dt:
+            fixed_start = float(np.nanmedian(starts))
+            fixed_end = float(np.nanmedian(ends))
+
+    dv_cutoff = defaults["dv_cutoff"]
+    if dvdt_cutoffs:
+        dv_cutoff = float(np.nanmedian(dvdt_cutoffs))
+
+    return dict(
+        filter_khz=filter_khz,
+        dv_cutoff=dv_cutoff,
+        stim_eps=stim_eps,
+        min_stim_dur=min_stim_dur,
+        fixed_start=fixed_start,
+        fixed_end=fixed_end,
+        step_tol=step_tol,
+        short_thresh=short_thresh,
+        baseline_window=baseline_window,
+    )
+
+
 def run(nwb_path, adc_name, dac_name, filter_khz, dv_cutoff, stim_eps,
         min_stim_dur, fixed_start, fixed_end, step_tol, short_thresh,
-        baseline_window, out_prefix):
+        baseline_window, out_prefix, auto_params):
     with NWBHDF5IO(nwb_path, "r", load_namespaces=True) as io:
         nwbfile = io.read()
 
@@ -196,6 +315,32 @@ def run(nwb_path, adc_name, dac_name, filter_khz, dv_cutoff, stim_eps,
             if sweep is None:
                 continue
             stim_by_sweep.setdefault(sweep, []).append(series)
+
+        if auto_params:
+            defaults = dict(
+                filter_khz=filter_khz,
+                dv_cutoff=dv_cutoff,
+                stim_eps=stim_eps,
+                min_stim_dur=min_stim_dur,
+                fixed_start=fixed_start,
+                fixed_end=fixed_end,
+                step_tol=step_tol,
+                short_thresh=short_thresh,
+                baseline_window=baseline_window,
+            )
+            auto = auto_parameters(
+                nwbfile, acq_by_sweep, stim_by_sweep, adc_name, dac_name, defaults
+            )
+            filter_khz = auto["filter_khz"]
+            dv_cutoff = auto["dv_cutoff"]
+            stim_eps = auto["stim_eps"]
+            min_stim_dur = auto["min_stim_dur"]
+            fixed_start = auto["fixed_start"]
+            fixed_end = auto["fixed_end"]
+            step_tol = auto["step_tol"]
+            short_thresh = auto["short_thresh"]
+            baseline_window = auto["baseline_window"]
+            print("Auto params:", auto)
 
         sweep_rows = []
         spike_rows = []
@@ -570,6 +715,8 @@ def main():
     parser.add_argument("--short-thresh", type=float, default=0.02, help="Max duration for short square (sec).")
     parser.add_argument("--baseline-window", type=float, default=0.1, help="Window for steady-state voltage (sec).")
     parser.add_argument("--out-prefix", default=None, help="Output prefix for CSVs.")
+    parser.add_argument("--auto-params", action="store_true",
+                        help="Estimate analysis parameters from the NWB file.")
     args = parser.parse_args()
 
     run(
@@ -586,6 +733,7 @@ def main():
         short_thresh=args.short_thresh,
         baseline_window=args.baseline_window,
         out_prefix=args.out_prefix,
+        auto_params=args.auto_params,
     )
 
 

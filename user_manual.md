@@ -52,6 +52,29 @@ python run_features_on_nwb.py <path_to_nwb> ^
   --out-prefix <output_prefix>
 ```
 
+Auto-parameter mode
+Use `--auto-params` to estimate stimulus window, thresholds, and filter
+settings from the NWB file:
+
+```powershell
+python run_features_on_nwb.py <path_to_nwb> --auto-params --out-prefix <output_prefix>
+```
+
+Parameter optimization strategy (auto mode)
+- `filter_khz`: uses sampling rate from the NWB; clamps to 1–4 kHz and caps at
+  ~0.45×Nyquist.
+- `stim_eps`: estimates current noise from the first/last 10% of the trace and
+  sets `stim_eps` to max(1 pA, 4×median noise).
+- `step_tol`: set to max(1 pA, 3×median noise) to classify step vs ramp.
+- `fixed_start/end`: if stimulus timing is consistent across sweeps (low
+  variance), uses the median start/end times; otherwise leaves unset.
+- `min_stim_dur`: 20% of the median stimulus duration, clamped to >= 0.01 s.
+- `short_thresh`: 0.1 s for long steps; otherwise 25% of the median duration
+  with a 0.02 s floor.
+- `baseline_window`: 25% of the median duration, clamped to 0.02–0.1 s.
+- `dv_cutoff`: uses 0.5× the 99.5th percentile of positive dV/dt, clamped to
+  5–40 V/s.
+
 Outputs:
 - `<output_prefix>_sweep_features.csv`: per-sweep features (stimulus, baseline,
   deflections, spike counts, sweep classification).
