@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+*.pyo
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# Environments
+.venv/
+venv/
+
+# Outputs / data
+output/
+*.nwb
+*.abf
+*.csv
+*.xlsx
+*.json
+*.h5
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+*.code-workspace
+all_samples_just_metadata_2021-10-07.xlsx
+# Vendored repos
+vendor/
